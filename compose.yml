@@ -1,0 +1,21 @@
+services:
+  pagewise:
+    image: pagewise:latest
+    container_name: pagewise
+    restart: unless-stopped
+    ports:
+      - "${PAGEWISE_BIND:-0.0.0.0}:${PAGEWISE_PORT:-8081}:8000"
+    environment:
+      APP_NAME: "${APP_NAME:-Pagewise}"
+      MAX_UPLOAD_MB: "${MAX_UPLOAD_MB:-50}"
+      RESULT_TTL_SECONDS: "${RESULT_TTL_SECONDS:-1800}"
+      MAX_CONCURRENT_CONVERSIONS: "${MAX_CONCURRENT_CONVERSIONS:-1}"
+      CONVERSION_TIMEOUT: "${CONVERSION_TIMEOUT:-180}"
+      BASIC_AUTH_USER: "${BASIC_AUTH_USER:-}"
+      BASIC_AUTH_PASSWORD: "${BASIC_AUTH_PASSWORD:-}"
+    volumes:
+      - pagewise-data:/data
+    mem_limit: 1500m
+
+volumes:
+  pagewise-data:

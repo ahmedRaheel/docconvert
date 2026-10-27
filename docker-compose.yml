@@ -1,0 +1,30 @@
+services:
+  pagewise:
+    build: .
+    image: pagewise:latest
+    container_name: pagewise
+    restart: unless-stopped
+    ports:
+      # Host port 8081 by default so it doesn't collide with the app you already run.
+      # Use PAGEWISE_BIND=127.0.0.1 when a reverse proxy on the same host sits in front.
+      - "${PAGEWISE_BIND:-0.0.0.0}:${PAGEWISE_PORT:-8081}:8000"
+    environment:
+      APP_NAME: "${APP_NAME:-Pagewise}"
+      MAX_UPLOAD_MB: "${MAX_UPLOAD_MB:-50}"
+      RESULT_TTL_SECONDS: "${RESULT_TTL_SECONDS:-1800}"
+      MAX_CONCURRENT_CONVERSIONS: "${MAX_CONCURRENT_CONVERSIONS:-2}"
+      CONVERSION_TIMEOUT: "${CONVERSION_TIMEOUT:-180}"
+      BASIC_AUTH_USER: "${BASIC_AUTH_USER:-}"
+      BASIC_AUTH_PASSWORD: "${BASIC_AUTH_PASSWORD:-}"
+    volumes:
+      - pagewise-data:/data
+    mem_limit: 2g
+    # join the network of your existing stack so its nginx can reach http://pagewise:8000
+    # networks: [default, existing_network]
+
+volumes:
+  pagewise-data:
+
+# networks:
+#   existing_network:
+#     external: true

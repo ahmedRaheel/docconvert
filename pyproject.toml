@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docconvert"
+version = "0.1.0"
+description = "Convert between PDF, Word, Excel and PowerPoint while preserving source formatting"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    "pdfplumber>=0.10",
+    "pypdfium2>=4.0",
+    "python-docx>=1.0",
+    "openpyxl>=3.1",
+    "python-pptx>=0.6.23",
+    "reportlab>=4.0",
+    "Pillow>=10.0",
+    "pypdf>=4.0",
+]
+
+[project.optional-dependencies]
+fidelity = ["pdf2docx>=0.5.8"]   # best PDF->Word layout (uses PyMuPDF, AGPL)
+html = ["weasyprint>=60"]   # best HTML->PDF CSS rendering
+test = ["pytest"]
+
+[project.scripts]
+docconvert = "docconvert.cli:main"
+
+[tool.setuptools]
+packages = ["docconvert"]

@@ -59,10 +59,31 @@ If your existing nginx runs as a container, either publish nothing and attach Pa
 Docker network (uncomment the `networks` lines in `docker-compose.yml`, then use `proxy_pass http://pagewise:8000/;`),
 or keep the host port and point nginx at the host's private IP.
 
+### Option C: built-in HTTPS with Caddy (no nginx needed)
+
+Browsers flag downloads served over plain HTTP ("loaded over an insecure connection"). The bundled Caddy
+service fixes that with an automatic, self-renewing Let's Encrypt certificate.
+
+1. Open inbound TCP **80** and **443** in the security group.
+2. Point a DNS A record at the instance IP, or use a free hostname such as `3-107-168-38.sslip.io`
+   (Let's Encrypt can't issue certificates for a bare IP address).
+3. Create `.env` next to `docker-compose.yml`:
+   ```
+   DOMAIN=convert.example.com
+   PAGEWISE_BIND=127.0.0.1      # app reachable only through Caddy
+   BASIC_AUTH_USER=admin
+   BASIC_AUTH_PASSWORD=choose-a-strong-one
+   ```
+4. Start it: `docker compose --profile https up -d --build`
+5. Visit `https://convert.example.com/`, then remove port 8081 from the security group.
+
+Without `--profile https`, Caddy does not start and the app behaves as before.
+
 ## 3. Settings (environment variables, or a `.env` file next to docker-compose.yml)
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `DOMAIN` | empty | hostname for the HTTPS Caddy service (`--profile https`) |
 | `PAGEWISE_PORT` | 8081 | host port |
 | `PAGEWISE_BIND` | 0.0.0.0 | set `127.0.0.1` when only a local reverse proxy should reach it |
 | `APP_NAME` | Pagewise | name shown in the header and zip file |

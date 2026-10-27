@@ -1,0 +1,14 @@
+# Used by the optional "caddy" service (docker compose --profile https up -d).
+# DOMAIN comes from .env, e.g. DOMAIN=convert.example.com
+# No domain? Use a free hostname that resolves to your IP: DOMAIN=3-107-168-38.sslip.io
+{$DOMAIN} {
+	request_body {
+		max_size {$MAX_UPLOAD_MB:50}MB
+	}
+	reverse_proxy pagewise:8000 {
+		transport http {
+			read_timeout 300s
+			write_timeout 300s
+		}
+	}
+}

@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-fidelity = ["pdf2docx>=0.5.8"]   # best PDF->Word layout (uses PyMuPDF, AGPL)
+fidelity = ["pdf2docx>=0.5.8", "pymupdf"]   # best PDF->Word layout + exact-layout mode for forms (PyMuPDF is AGPL)
 html = ["weasyprint>=60"]   # best HTML->PDF CSS rendering
 test = ["pytest"]
 

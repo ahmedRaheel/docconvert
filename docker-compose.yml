@@ -14,6 +14,10 @@ services:
       RESULT_TTL_SECONDS: "${RESULT_TTL_SECONDS:-1800}"
       MAX_CONCURRENT_CONVERSIONS: "${MAX_CONCURRENT_CONVERSIONS:-2}"
       CONVERSION_TIMEOUT: "${CONVERSION_TIMEOUT:-180}"
+      # Direct-to-S3 uploads (leave S3_BUCKET empty to use local disk instead)
+      S3_BUCKET: "${S3_BUCKET:-}"
+      AWS_REGION: "${AWS_REGION:-}"
+      S3_PREFIX: "${S3_PREFIX:-pagewise}"
       BASIC_AUTH_USER: "${BASIC_AUTH_USER:-}"
       BASIC_AUTH_PASSWORD: "${BASIC_AUTH_PASSWORD:-}"
     volumes:
@@ -22,31 +26,8 @@ services:
     # join the network of your existing stack so its nginx can reach http://pagewise:8000
     # networks: [default, existing_network]
 
-  # HTTPS front end (automatic Let's Encrypt certificate). Off by default; start it with:
-  #   docker compose --profile https up -d
-  # Needs DOMAIN set in .env and ports 80 + 443 open in the security group.
-  caddy:
-    image: caddy:2
-    profiles: ["https"]
-    container_name: pagewise-caddy
-    restart: unless-stopped
-    environment:
-      DOMAIN: "${DOMAIN:-}"
-      MAX_UPLOAD_MB: "${MAX_UPLOAD_MB:-50}"
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      - pagewise
-
 volumes:
   pagewise-data:
-  caddy-data:
-  caddy-config:
 
 # networks:
 #   existing_network:

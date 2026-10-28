@@ -18,9 +18,17 @@ from .utils import chars_to_segments, group_runs, most_common_size, parse_pages
 _BULLET = re.compile(r"^[•●▪■◦‣\-–—*]\s+")
 
 
-def pdf_to_docx(src, dst, *, engine: str = "auto", pages=None, **_):
+def pdf_to_docx(src, dst, *, engine: str = "auto", pages=None, layout: str = "auto", **_):
+    """layout: ``"auto"`` (exact copy for forms, flowing text otherwise), ``"fixed"`` or ``"flow"``."""
     if engine not in ("auto", "pdf2docx", "builtin"):
         engine = "auto"
+    layout = {"exact": "fixed", "flowing": "flow"}.get(layout, layout)
+    if layout not in ("auto", "fixed", "flow"):
+        layout = "auto"
+    if layout != "flow":
+        from .pdf_to_docx_fixed import looks_like_form, pdf_to_docx_fixed
+        if layout == "fixed" or looks_like_form(src, pages):
+            return pdf_to_docx_fixed(src, dst, pages=pages)
     if engine in ("auto", "pdf2docx"):
         try:
             return _with_pdf2docx(src, dst, pages)

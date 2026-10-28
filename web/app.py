@@ -17,9 +17,10 @@ import threading
 import time
 import uuid
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request, send_file
+from flask import Flask, Response, jsonify, redirect, render_template, request, send_file
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.utils import secure_filename
 
@@ -33,6 +34,13 @@ MAX_PARALLEL = int(os.getenv("MAX_CONCURRENT_CONVERSIONS", "2"))
 TIMEOUT = int(os.getenv("CONVERSION_TIMEOUT", "180"))
 WORK = Path(os.getenv("WORK_DIR", tempfile.gettempdir())) / "pagewise"
 WORK.mkdir(parents=True, exist_ok=True)
+
+# S3 mode: browsers upload straight to the bucket and results are downloaded straight from it,
+# so the EC2 box never proxies file bytes. Enabled by setting S3_BUCKET.
+S3_BUCKET = os.getenv("S3_BUCKET", "").strip()
+S3_REGION = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or None
+S3_PREFIX = os.getenv("S3_PREFIX", "pagewise").strip("/")
+USE_S3 = bool(S3_BUCKET)
 
 # what each source type can be turned into (legacy types are converted via LibreOffice)
 CANON = {"pdf": "pdf", "docx": "docx", "xlsx": "xlsx", "pptx": "pptx", "html": "html",
@@ -51,6 +59,39 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 log = logging.getLogger("pagewise")
 _slots = threading.BoundedSemaphore(MAX_PARALLEL)
+_pool = ThreadPoolExecutor(max_workers=MAX_PARALLEL, thread_name_prefix="convert")
+_s3 = None
+
+
+def s3():
+    """Lazily created S3 client (credentials come from the EC2 instance role)."""
+    global _s3
+    if _s3 is None:
+        import boto3
+        from botocore.config import Config
+        _s3 = boto3.client("s3", region_name=S3_REGION, config=Config(
+            signature_version="s3v4", s3={"addressing_style": "virtual"},
+            retries={"max_attempts": 4, "mode": "standard"}))
+    return _s3
+
+
+def _key(*parts: str) -> str:
+    return "/".join(([S3_PREFIX] if S3_PREFIX else []) + list(parts))
+
+
+def _put_status(job: str, data: dict):
+    s3().put_object(Bucket=S3_BUCKET, Key=_key("jobs", job + ".json"), Body=json.dumps(data).encode(),
+                    ContentType="application/json")
+
+
+def _get_status(job: str):
+    if not JOB_ID.match(job or ""):
+        return None
+    try:
+        body = s3().get_object(Bucket=S3_BUCKET, Key=_key("jobs", job + ".json"))["Body"].read()
+        return json.loads(body)
+    except Exception:
+        return None
 
 
 # ----------------------------------------------------------------- housekeeping
@@ -66,7 +107,7 @@ def _janitor():
             log.exception("cleanup failed")
 
 
-threading.Thread(target=_janitor, daemon=True, name="janitor").start()
+threading.Thread(target=_janitor, daemon=True, name="janitor").start()  # S3 mode uses a bucket lifecycle rule
 
 
 @app.before_request
@@ -88,9 +129,7 @@ def _headers(resp):
         "Content-Security-Policy",
         "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; "
         "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; "
-        "font-src https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data:; connect-src 'self' https://cdn.jsdelivr.net")
-    if request.is_secure:  # only behind HTTPS (the reverse proxy sets X-Forwarded-Proto)
-        resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+        "font-src https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data:; connect-src 'self' https://*.amazonaws.com")
     if request.path.startswith("/api/"):
         resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -105,22 +144,56 @@ def _too_big(_):
     return _err(f"That file is larger than {MAX_MB} MB.", 413)
 
 
+
+def _clean_options(raw):
+    """Whitelist what the browser may pass on to the converter -> (opts, engine, error)."""
+    raw = raw if isinstance(raw, dict) else {}
+    opts: dict = {}
+    if raw.get("pages"):
+        if not PAGES.match(str(raw["pages"])):
+            return {}, "auto", "Pages should look like 1-3, 5."
+        opts["pages"] = str(raw["pages"]).replace(" ", "")
+    if raw.get("mode") in ("editable", "image"):
+        opts["mode"] = raw["mode"]
+    if raw.get("layout") in ("auto", "fixed", "flow"):
+        opts["layout"] = raw["layout"]
+    if raw.get("sheet_mode") in ("page", "table"):
+        opts["sheet_mode"] = raw["sheet_mode"]
+    engine = raw.get("engine") if raw.get("engine") in ("auto", "builtin") else "auto"
+    return opts, engine, None
+
+
+def _explain(exc: Exception):
+    """Exception -> (message, http status)."""
+    if isinstance(exc, MissingDependencyError):
+        return f"This conversion needs a component that isn't installed on the server: {exc}", 501
+    if isinstance(exc, ValueError):
+        return str(exc), 400
+    if isinstance(exc, DocConvertError):
+        return f"The file couldn't be converted: {exc}", 422
+    log.exception("conversion crashed", exc_info=exc)
+    return "Something went wrong while converting. Try again, or try the built-in engine under More options.", 500
+
+
 # ----------------------------------------------------------------- pages & api
 @app.get("/")
 def index():
-    boot = {"base": request.script_root, "maxMb": MAX_MB, "formats": FORMATS, "canon": CANON}
+    boot = {"base": request.script_root, "maxMb": MAX_MB, "formats": FORMATS, "canon": CANON,
+            "storage": "s3" if USE_S3 else "local"}
     return render_template("index.html", app_name=APP_NAME, max_mb=MAX_MB, ttl_minutes=max(1, TTL // 60), boot=boot)
 
 
 @app.get("/healthz")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "storage": "s3" if USE_S3 else "local"}
 
 
 @app.post("/api/convert")
 def api_convert():
     f = request.files.get("file")
     to = (request.form.get("to") or "").lower()
+    if USE_S3:
+        return _err("Upload the file to storage first (see /api/uploads).", 400)
     if not f or not f.filename:
         return _err("Choose a file to convert.", 400)
     name = secure_filename(f.filename) or "document"
@@ -133,19 +206,11 @@ def api_convert():
 
     try:
         raw = json.loads(request.form.get("options") or "{}")
-        raw = raw if isinstance(raw, dict) else {}
     except ValueError:
         raw = {}
-    opts: dict = {}
-    if raw.get("pages"):
-        if not PAGES.match(str(raw["pages"])):
-            return _err("Pages should look like 1-3, 5.", 400)
-        opts["pages"] = str(raw["pages"]).replace(" ", "")
-    if raw.get("mode") in ("editable", "image"):
-        opts["mode"] = raw["mode"]
-    if raw.get("sheet_mode") in ("page", "table"):
-        opts["sheet_mode"] = raw["sheet_mode"]
-    engine = raw.get("engine") if raw.get("engine") in ("auto", "builtin") else "auto"
+    opts, engine, problem = _clean_options(raw)
+    if problem:
+        return _err(problem, 400)
 
     job = uuid.uuid4().hex
     jdir = WORK / job
@@ -187,8 +252,105 @@ def _result(job: str) -> Path | None:
     return files[0] if files else None
 
 
+def _source_ext(name: str):
+    ext = Path(name).suffix.lower().lstrip(".")
+    return "html" if ext == "htm" else ext
+
+
+@app.post("/api/uploads")
+def api_uploads():
+    """Hand the browser a short-lived, size-limited form to upload one file straight to S3."""
+    if not USE_S3:
+        return _err("Direct upload isn't enabled on this server.", 404)
+    data = request.get_json(silent=True) or {}
+    name = secure_filename(str(data.get("name") or "")) or "document"
+    ext = _source_ext(name)
+    if ext not in FORMATS:
+        return _err("That file type isn't supported. Use PDF, Word, Excel, PowerPoint or HTML.", 415)
+    try:
+        size = int(data.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size > MAX_MB * 1024 * 1024:
+        return _err(f"That file is larger than {MAX_MB} MB.", 413)
+    key = _key("uploads", uuid.uuid4().hex, name[:150])
+    post = s3().generate_presigned_post(S3_BUCKET, key, ExpiresIn=900,
+                                        Conditions=[["content-length-range", 1, MAX_MB * 1024 * 1024]])
+    return jsonify(url=post["url"], fields=post["fields"], key=key)
+
+
+def _run_s3_job(job, key, ext, to, opts, engine, out_name):
+    """Runs in a worker thread: S3 -> temp file -> convert -> S3, recording progress in S3."""
+    try:
+        _put_status(job, {"state": "working"})
+        with tempfile.TemporaryDirectory(dir=WORK) as td:
+            src, out = Path(td) / f"source.{ext}", Path(td) / out_name
+            s3().download_file(S3_BUCKET, key, str(src))
+            docconvert.convert(src, out, to=to, engine=engine, timeout=TIMEOUT, **opts)
+            rkey = _key("results", job, out_name)
+            s3().upload_file(str(out), S3_BUCKET, rkey)
+            _put_status(job, {"state": "done", "name": out_name, "size": out.stat().st_size, "key": rkey})
+    except Exception as exc:
+        msg, _ = _explain(exc)
+        try:
+            _put_status(job, {"state": "failed", "error": msg})
+        except Exception:
+            log.exception("could not record failure")
+    finally:
+        try:
+            s3().delete_object(Bucket=S3_BUCKET, Key=key)   # never keep the original longer than needed
+        except Exception:
+            log.warning("could not delete %s", key)
+
+
+@app.post("/api/s3/convert")
+def api_s3_convert():
+    if not USE_S3:
+        return _err("Direct upload isn't enabled on this server.", 404)
+    data = request.get_json(silent=True) or {}
+    key, to = str(data.get("key") or ""), str(data.get("to") or "").lower()
+    pattern = re.compile("^" + re.escape(_key("uploads")) + r"/[0-9a-f]{32}/[A-Za-z0-9._\-]{1,150}$")
+    if not pattern.match(key):
+        return _err("That upload wasn't recognised.", 400)
+    name = key.rsplit("/", 1)[1]
+    ext = _source_ext(name)
+    if ext not in FORMATS or to not in FORMATS[ext]:
+        return _err(f"A .{ext} file can't be converted to .{to}.", 400)
+    opts, engine, problem = _clean_options(data.get("options"))
+    if problem:
+        return _err(problem, 400)
+    try:
+        head = s3().head_object(Bucket=S3_BUCKET, Key=key)
+    except Exception:
+        return _err("The upload didn't arrive. Try again.", 404)
+    if head["ContentLength"] > MAX_MB * 1024 * 1024:
+        s3().delete_object(Bucket=S3_BUCKET, Key=key)
+        return _err(f"That file is larger than {MAX_MB} MB.", 413)
+    job = uuid.uuid4().hex
+    _put_status(job, {"state": "queued"})
+    _pool.submit(_run_s3_job, job, key, ext, to, opts, engine, Path(name).stem[:120] + "." + to)
+    return jsonify(job=job), 202
+
+
+@app.get("/api/jobs/<job>")
+def api_job(job):
+    st = _get_status(job) if USE_S3 else None
+    if not st:
+        return _err("Unknown or expired job.", 404)
+    return jsonify({k: st[k] for k in ("state", "name", "size", "error") if k in st})
+
+
 @app.get("/api/download/<job>")
 def download(job):
+    if USE_S3:
+        st = _get_status(job)
+        if not st or st.get("state") != "done":
+            return _err("This file has expired. Convert it again.", 404)
+        url = s3().generate_presigned_url(
+            "get_object", ExpiresIn=300,
+            Params={"Bucket": S3_BUCKET, "Key": st["key"],
+                    "ResponseContentDisposition": f'attachment; filename="{st["name"]}"'})
+        return redirect(url, 302)
     f = _result(job)
     if not f:
         return _err("This file has expired. Convert it again.", 404)
@@ -198,8 +360,20 @@ def download(job):
 @app.get("/api/download-all")
 def download_all():
     ids = [i for i in (request.args.get("ids") or "").split(",") if i][:25]
-    files = [f for f in (_result(i) for i in ids) if f]
+    tmp = tempfile.TemporaryDirectory(dir=WORK)
+    if USE_S3:
+        files = []
+        for i in ids:
+            st = _get_status(i)
+            if st and st.get("state") == "done":
+                dest = Path(tmp.name) / i / st["name"]
+                dest.parent.mkdir()
+                s3().download_file(S3_BUCKET, st["key"], str(dest))
+                files.append(dest)
+    else:
+        files = [f for f in (_result(i) for i in ids) if f]
     if not files:
+        tmp.cleanup()
         return _err("These files have expired. Convert them again.", 404)
     buf, seen = io.BytesIO(), {}
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -208,6 +382,7 @@ def download_all():
             seen[f.name] = n + 1
             z.write(f, f.name if not n else f"{f.stem} ({n}){f.suffix}")
     buf.seek(0)
+    tmp.cleanup()
     return send_file(buf, mimetype="application/zip", as_attachment=True,
                      download_name=f"{APP_NAME.lower()}-converted.zip", max_age=0)
 

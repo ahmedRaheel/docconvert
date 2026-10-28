@@ -65,6 +65,18 @@
         </fieldset>
 
         <div class="sect opts" id="opts">
+          <div class="opt" id="optDocx" hidden>
+            <div class="sect-title" id="lblDocx">Word layout</div>
+            <div class="btn-group seg" role="group" aria-labelledby="lblDocx">
+              <input type="radio" class="btn-check" name="layout" id="layout-auto" value="auto" checked>
+              <label class="btn" for="layout-auto">Automatic</label>
+              <input type="radio" class="btn-check" name="layout" id="layout-fixed" value="fixed">
+              <label class="btn" for="layout-fixed">Exact copy (forms)</label>
+              <input type="radio" class="btn-check" name="layout" id="layout-flow" value="flow">
+              <label class="btn" for="layout-flow">Flowing text</label>
+            </div>
+            <p class="opt-hint">Forms with boxes and fields keep their exact positions. Reports and articles reflow like a normal Word file.</p>
+          </div>
           <div class="opt" id="optPptx" hidden>
             <div class="sect-title" id="lblPptx">Slides from a PDF</div>
             <div class="btn-group seg" role="group" aria-labelledby="lblPptx">

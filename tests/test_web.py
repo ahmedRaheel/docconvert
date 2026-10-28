@@ -22,7 +22,7 @@ def _docx_bytes():
 def test_index_and_health(client):
     r = client.get("/")
     assert r.status_code == 200 and b"Turn" in r.data and b'id="boot"' in r.data
-    assert client.get("/healthz").json == {"status": "ok"}
+    assert client.get("/healthz").json["status"] == "ok"
 
 
 def test_convert_download_and_zip(client):

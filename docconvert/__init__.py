@@ -7,6 +7,7 @@
 >>> docconvert.convert("sheet.xlsx", "sheet.pptx")   # office -> office goes through PDF
 """
 from .core import available_engines, convert, convert_many, detect_format, supported_conversions
+from . import pdf_to_docx_fixed  # noqa: F401
 from .errors import ConversionError, DocConvertError, MissingDependencyError, UnsupportedConversionError
 
 # Convenience wrappers ------------------------------------------------------

@@ -16,6 +16,7 @@ def main(argv=None) -> int:
     ap.add_argument("-p", "--pages", help='pages for PDF input, e.g. "1-3,5"')
     ap.add_argument("--mode", choices=["editable", "image"], help="PDF->PPTX mode")
     ap.add_argument("--sheet-mode", choices=["page", "table"], help="PDF->XLSX sheet layout")
+    ap.add_argument("--layout", choices=["auto", "fixed", "flow"], help="PDF->Word: exact copy (forms) or flowing text")
     ap.add_argument("--list-engines", action="store_true")
     ap.add_argument("--version", action="version", version=__version__)
     a = ap.parse_args(argv)
@@ -26,7 +27,7 @@ def main(argv=None) -> int:
         return 0
     if not a.input or not (a.to or a.output):
         ap.error("input and --to/--output are required")
-    opts = {k: v for k, v in dict(pages=a.pages, mode=a.mode, sheet_mode=a.sheet_mode).items() if v}
+    opts = {k: v for k, v in dict(pages=a.pages, mode=a.mode, sheet_mode=a.sheet_mode, layout=a.layout).items() if v}
     try:
         out = convert(a.input, a.output, to=a.to, engine=a.engine, **opts)
     except (DocConvertError, FileNotFoundError, FileExistsError, ValueError) as exc:

@@ -30,7 +30,7 @@ docconvert --list-engines
 
 | Direction | Engine | Preserves |
 |---|---|---|
-| PDF → Word | `pdf2docx` (if installed) else `builtin` | layout, fonts, tables, images / headings, bullets, bold/italic/colour, tables, images |
+| PDF → Word | `layout="fixed"` for forms (exact copy: text pinned in place + line art as background), else `pdf2docx` if installed, else `builtin` | layout, fonts, tables, images / headings, bullets, bold/italic/colour, tables, images |
 | PDF → Excel | `builtin` | tables → real cells (numbers, %, thousands separators), styled headers; text-only pages split into columns |
 | PDF → PowerPoint | `builtin` | one slide per page; positioned text boxes with font/size/colour, shaded rectangles, pictures. Scanned pages fall back to a full-slide image |
 | Word/Excel/PowerPoint → PDF | `libreoffice` (if installed) else `builtin` | LibreOffice: full fidelity. Builtin: text styles, tables, pictures, fills, slide positions |
@@ -58,3 +58,10 @@ See **DEPLOY.md** for running it on a server next to an existing app (port, reve
 ```bash
 docker compose up -d --build     # http://localhost:8081
 ```
+
+### PDF forms to Word
+
+`layout="auto"` (default) detects forms (comb boxes, form fields, heavy line art) and converts them as an
+**exact copy**: every box, line, logo and rotated label is kept in a background picture, and all normal text
+becomes editable text frames at the original coordinates. Force it with `layout="fixed"`, or use
+`layout="flow"` for reflowing Word text. Needs `pip install pymupdf` (included in the `fidelity` extra).

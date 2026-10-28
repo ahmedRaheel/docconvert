@@ -120,6 +120,7 @@
   function renderOptions() {
     const hasPdf = pending().some((f) => canon(f.ext) === 'pdf');
     $('#optPages').hidden = !hasPdf;
+    $('#optDocx').hidden = !(hasPdf && state.target === 'docx');
     $('#optPptx').hidden = !(hasPdf && state.target === 'pptx');
     $('#optXlsx').hidden = !(hasPdf && state.target === 'xlsx');
   }
@@ -208,6 +209,7 @@
     const o = {};
     const pages = $('#pages').value.trim();
     if (pages && !$('#optPages').hidden) o.pages = pages;
+    if (!$('#optDocx').hidden) o.layout = document.querySelector('input[name=layout]:checked').value;
     if (!$('#optPptx').hidden) o.mode = document.querySelector('input[name=mode]:checked').value;
     if (!$('#optXlsx').hidden) o.sheet_mode = document.querySelector('input[name=sheet_mode]:checked').value;
     const eng = $('#engine').value;
@@ -222,7 +224,7 @@
     row.querySelector('.file-meta').textContent = statusText(f);
   }
 
-  function send(f, to, options) {
+  function sendLocal(f, to, options) {
     return new Promise((resolve) => {
       f.status = 'uploading'; f.progress = 0; f.to = to; f.error = '';
       renderFiles();
@@ -257,6 +259,61 @@
       xhr.send(fd);
     });
   }
+
+  /* S3 mode: the file goes straight from the browser to the bucket, the server only converts. */
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function api(path, body) {
+    const res = await fetch(`${BASE}${path}`, body === undefined ? {} : {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    let data = {};
+    try { data = await res.json(); } catch (_) { /* non-JSON error page */ }
+    if (!res.ok) throw new Error(data.error || `The server couldn\u2019t finish this (error ${res.status}).`);
+    return data;
+  }
+
+  async function sendS3(f, to, options) {
+    f.status = 'uploading'; f.progress = 0; f.to = to; f.error = '';
+    renderFiles();
+    try {
+      const meta = await api('/api/uploads', { name: f.name, size: f.size });
+      await new Promise((resolve, reject) => {
+        const fd = new FormData();
+        Object.entries(meta.fields).forEach(([k, v]) => fd.append(k, v));
+        fd.append('file', f.file, f.name);                       // must be the last field
+        const xhr = new XMLHttpRequest();
+        f.xhr = xhr;
+        xhr.open('POST', meta.url);
+        xhr.upload.onprogress = (e) => { if (e.lengthComputable) { f.progress = e.loaded / e.total; paintProgress(f); } };
+        xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve()
+          : reject(new Error('The upload was rejected by storage. Check the file size and try again.')));
+        xhr.onerror = () => reject(new Error('Couldn\u2019t upload the file. Check your connection and try again.'));
+        xhr.onabort = () => reject(Object.assign(new Error('aborted'), { aborted: true }));
+        xhr.send(fd);
+      });
+      f.xhr = null; f.status = 'converting'; renderFiles();
+      const { job } = await api('/api/s3/convert', { key: meta.key, to, options });
+      const deadline = Date.now() + 15 * 60 * 1000;
+      let misses = 0;
+      for (;;) {
+        await sleep(1500);
+        if (!state.files.includes(f)) return;                      // removed while converting
+        let st;
+        try { st = await api(`/api/jobs/${job}`); misses = 0; }
+        catch (e) { if (++misses >= 4) throw e; continue; }
+        if (st.state === 'done') { f.status = 'done'; f.progress = 1; f.result = { id: job, name: st.name, size: st.size };
+          live.textContent = `${f.name} converted to .${to}.`; break; }
+        if (st.state === 'failed') throw new Error(st.error || 'The file couldn\u2019t be converted.');
+        if (Date.now() > deadline) throw new Error('This is taking too long. Try again.');
+      }
+    } catch (e) {
+      f.xhr = null;
+      if (e.aborted) return;
+      f.status = 'failed'; f.error = e.message;
+    }
+    renderFiles();
+  }
+
+  const send = (f, to, options) => (boot.storage === 's3' ? sendS3(f, to, options) : sendLocal(f, to, options));
 
   async function run() {
     if (state.running || !state.target) return;

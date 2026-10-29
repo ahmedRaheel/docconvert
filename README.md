@@ -64,4 +64,23 @@ docker compose up -d --build     # http://localhost:8081
 `layout="auto"` (default) detects forms (comb boxes, form fields, heavy line art) and converts them as an
 **exact copy**: every box, line, logo and rotated label is kept in a background picture, and all normal text
 becomes editable text frames at the original coordinates. Force it with `layout="fixed"`, or use
-`layout="flow"` for reflowing Word text. Needs `pip install pymupdf` (included in the `fidelity` extra).
+`layout="flow"` for reflowing Word text. Needs nothing beyond the core install (no PyMuPDF).
+
+## Formatting is copied, not flattened
+
+Every direction reads the real formatting from the source and writes it to the target:
+
+| Source -> target | What is copied |
+|---|---|
+| Word -> PDF | run font family (sans/serif/mono), size, bold, italic, underline, strike, colour, highlight, sub/superscript; paragraph alignment, indents, spacing, line spacing; bullets/numbering; table shading, borders, merged cells; headers/footers; style inheritance |
+| Excel -> PDF | cell font/size/colour/bold/italic/underline/strike, fills, borders, alignment, wrap, indent, merged cells, number/percent/currency/date formats, column widths, row heights, hidden rows/columns, fit-to-width |
+| PowerPoint -> PDF | formatting resolved through layout/master/theme (size, bold, italic, underline, colour incl. theme tints, alignment, bullets, spacing, insets, autofit scale, anchors), shape fills/outlines/geometry/rotation, groups, cropped pictures, tables, backgrounds |
+| HTML -> PDF | `<style>` rules (tag, .class, #id) and `style=""`: colour, background, font size/weight/style/family, underline/strike, text-align, borders; table cell fills/alignment |
+| PDF -> Word | size, colour, bold, italic, font per run (flow mode); exact copy mode for forms |
+| PDF -> Excel | per-cell font, size, colour, bold, italic (mixed formatting as rich text), fill, borders, alignment, merged cells, column widths, row heights |
+| PDF -> PowerPoint | text boxes with font, size, colour, bold, italic; fills, outlines and ruled lines as shapes; exact copy mode for forms |
+
+With LibreOffice installed, Office/HTML -> PDF uses it instead (full fidelity). The pure-Python renderers above
+are the fallback and are the ones to rely on for slim servers.
+Fonts that are not installed (Calibri, Arial...) are mapped to the closest installed family, so size, weight and
+style survive even when the exact typeface cannot.

@@ -10,181 +10,13 @@ are mangled and fields overlap. This mode keeps every page exactly where it was:
   pinned to the same coordinates, with the original font, size, colour, bold and italic;
 * letters typed into comb boxes get one frame per letter so they stay inside their cells.
 
-Needs PyMuPDF (installed with the ``fidelity`` extra).
+Pure pdfplumber + pypdfium2: no extra packages beyond the core install.
 """
 from __future__ import annotations
 
-import re
-from statistics import median
-
-from .errors import MissingDependencyError
 from .utils import clean_font, font_is_bold, font_is_italic, parse_pages
 
-_SYMBOLIC = re.compile(r"dingbat|symbol|wingding|webding|zapf", re.I)
-
-
-def _fitz():
-    try:
-        import fitz  # PyMuPDF
-    except ImportError as exc:
-        raise MissingDependencyError("Exact-layout mode needs PyMuPDF: pip install pymupdf") from exc
-    return fitz
-
-
-def looks_like_form(src, pages=None) -> bool:
-    """Heuristic used by ``layout="auto"``: form fields, comb boxes or heavy line art."""
-    try:
-        fitz = _fitz()
-    except MissingDependencyError:
-        return False
-    doc = fitz.open(str(src))
-    try:
-        for i in parse_pages(pages, len(doc))[:3]:
-            page = doc[i]
-            if list(page.widgets() or []):
-                return True
-            comb = 0
-            for b in page.get_text("rawdict")["blocks"]:
-                for ln in b.get("lines", []):
-                    if abs(ln["dir"][1]) > 0.02:
-                        continue
-                    for sp in ln["spans"]:
-                        if len(sp["chars"]) == 1 and sp["chars"][0]["c"].strip():
-                            comb += 1
-            if comb >= 25 or len(page.get_drawings()) >= 400:
-                return True
-        return False
-    finally:
-        doc.close()
-
-
-def _rgb_int(c) -> int:
-    try:
-        if isinstance(c, (int, float)):
-            c = (c, c, c)
-        c = tuple(c)
-        if len(c) == 1:
-            c = c * 3
-        return (round(c[0] * 255) << 16) | (round(c[1] * 255) << 8) | round(c[2] * 255)
-    except Exception:
-        return 0
-
-
-def _overlap(a, b) -> float:
-    w = min(a[2], b[2]) - max(a[0], b[0])
-    h = min(a[3], b[3]) - max(a[1], b[1])
-    if w <= 0 or h <= 0:
-        return 0.0
-    small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1])) or 1
-    return w * h / small
-
-
-def _collect(page):
-    """Text worth rebuilding as Word text, in drawing order.
-
-    Uses the text trace (which knows drawing order) so that text hidden underneath
-    later text - common in edited forms - is dropped instead of being doubled.
-    """
-    items = []
-    for t in page.get_texttrace():
-        if t.get("type") == 3 or t.get("opacity", 1) == 0:
-            continue
-        dx, dy = t.get("dir", (1, 0))
-        if abs(dy) > 0.02 or dx <= 0:                      # rotated text stays in the picture
-            continue
-        chars = [dict(c=chr(c[0]), bbox=tuple(c[3]), oy=c[2][1]) for c in t["chars"]]
-        if _SYMBOLIC.search(t["font"]):
-            continue                                       # symbols, boxes stay in the picture
-        size = t["size"]
-        # one text object can hold several lines / far-apart words: split into visual pieces
-        pieces, cur = [], []
-        for c in chars:
-            if cur:
-                pv = cur[-1]
-                if (abs(c["oy"] - pv["oy"]) > 0.4 * size or c["bbox"][0] - pv["bbox"][2] > 1.5 * size
-                        or c["bbox"][0] - pv["bbox"][2] < -2 * size):
-                    pieces.append(cur)
-                    cur = []
-            cur.append(c)
-        if cur:
-            pieces.append(cur)
-        for pc in pieces:
-            while pc and not pc[0]["c"].strip():
-                pc.pop(0)
-            while pc and not pc[-1]["c"].strip():
-                pc.pop()
-            text = "".join(c["c"] for c in pc)
-            if not text or not re.search(r"\w", text):
-                continue                                   # dashes and lone symbols stay in the picture
-            bb = (min(c["bbox"][0] for c in pc), min(c["bbox"][1] for c in pc),
-                  max(c["bbox"][2] for c in pc), max(c["bbox"][3] for c in pc))
-            items.append(dict(chars=pc, text=text, size=size, font=t["font"], flags=t.get("flags", 0),
-                              color=_rgb_int(t.get("color", 0)), y=round(pc[0]["oy"], 1), bbox=bb,
-                              seq=t.get("seqno", 0)))
-    kept = []
-    for it in sorted(items, key=lambda s: -s["seq"]):      # newest first; older overlapped text is hidden
-        if not any(_overlap(it["bbox"], k["bbox"]) > 0.15 for k in kept):
-            kept.append(it)
-    items = kept
-    # merge neighbouring spans of the same style on one baseline (but not comb letters)
-    items.sort(key=lambda s: (s["y"], s["bbox"][0]))
-    merged = []
-    for it in items:
-        p = merged[-1] if merged else None
-        if (p and abs(p["y"] - it["y"]) < 1.0 and p["font"] == it["font"] and abs(p["size"] - it["size"]) < .3
-                and p["color"] == it["color"] and 0 <= it["bbox"][0] - p["bbox"][2] < 0.35 * it["size"]):
-            gap = it["bbox"][0] - p["bbox"][2]
-            if gap > 0.15 * it["size"] and not p["text"].endswith(" "):
-                p["text"] += " "
-                p["chars"] = p["chars"] + [dict(c=" ", bbox=(p["bbox"][2], p["bbox"][1], it["bbox"][0], p["bbox"][3]))]
-            p["text"] += it["text"]
-            p["chars"] = p["chars"] + it["chars"]
-            p["bbox"] = (p["bbox"][0], min(p["bbox"][1], it["bbox"][1]), it["bbox"][2], max(p["bbox"][3], it["bbox"][3]))
-        else:
-            merged.append(dict(it))
-    spans = []
-    for s in merged:
-        ch = s["chars"]
-        gaps = [ch[k + 1]["bbox"][0] - ch[k]["bbox"][2] for k in range(len(ch) - 1) if ch[k]["c"] != " " and ch[k + 1]["c"] != " "]
-        comb = len(ch) >= 3 and gaps and median(gaps) > 0.35 * s["size"]
-        if comb:
-            for c in ch:
-                if c["c"].strip():
-                    spans.append(dict(s, text=c["c"], bbox=tuple(c["bbox"])))
-        else:
-            spans.append(s)
-    return spans
-
-
-def _visible_spans(fitz, page, spans, dpi: int = 144):
-    """Cut the spans out of the page and keep only those whose removal changes the picture,
-    i.e. text that is really visible (not covered by a later white box or clipped away)."""
-    import io
-
-    from PIL import Image, ImageChops
-
-    def snap():
-        pix = page.get_pixmap(dpi=dpi, alpha=False)
-        return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-
-    before = snap()
-    for s in spans:
-        page.add_redact_annot(fitz.Rect(s["bbox"]) + (0.3, 0.3, -0.3, -0.3), fill=False)
-    page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE, graphics=fitz.PDF_REDACT_LINE_ART_NONE)
-    after = snap()
-    k = dpi / 72.0
-    keep = []
-    for s in spans:
-        x0, y0, x1, y1 = s["bbox"]
-        ix, iy = min(1.5, 0.2 * (x1 - x0)), min(1.0, 0.2 * (y1 - y0))   # ignore ink of neighbours at the edges
-        box = (max(int((x0 + ix) * k), 0), max(int((y0 + iy) * k), 0),
-               min(int((x1 - ix) * k) + 1, before.width), min(int((y1 - iy) * k) + 1, before.height))
-        if box[2] <= box[0] or box[3] <= box[1]:
-            continue
-        diff = ImageChops.difference(before.crop(box), after.crop(box)).convert("L")
-        if diff.getextrema()[1] >= 40:
-            keep.append(s)
-    return keep
+from .pdf_layout import looks_like_form, render_page  # noqa: F401  (looks_like_form re-exported)
 
 
 def _frame(doc, s, page_w, dy):
@@ -256,32 +88,25 @@ def _background(doc, png: bytes, w_pt, h_pt, first: bool):
 
 
 def pdf_to_docx_fixed(src, dst, *, pages=None, dpi: int = 200, y_offset: float = 0.0, **_):
-    fitz = _fitz()
+    import pdfplumber
     from docx import Document
     from docx.shared import Pt
 
-    pdf = fitz.open(str(src))
-    try:
-        idx = parse_pages(pages, len(pdf))
-        first = pdf[idx[0]].rect
-        doc = Document()
-        sec = doc.sections[0]
-        sec.page_width, sec.page_height = Pt(first.width), Pt(first.height)
-        sec.left_margin = sec.right_margin = sec.top_margin = sec.bottom_margin = Pt(0)
-        sec.header_distance = sec.footer_distance = Pt(0)
-        # the template ships with an empty paragraph; remove it so page 1 holds only our content
-        for para in list(doc.paragraphs):
-            para._p.getparent().remove(para._p)
+    with pdfplumber.open(str(src)) as pl:
+        idx = parse_pages(pages, len(pl.pages))
+        fw, fh = float(pl.pages[idx[0]].width), float(pl.pages[idx[0]].height)
+    doc = Document()
+    sec = doc.sections[0]
+    sec.page_width, sec.page_height = Pt(fw), Pt(fh)
+    sec.left_margin = sec.right_margin = sec.top_margin = sec.bottom_margin = Pt(0)
+    sec.header_distance = sec.footer_distance = Pt(0)
+    for para in list(doc.paragraphs):                       # drop the template's empty paragraph
+        para._p.getparent().remove(para._p)
 
-        for n, i in enumerate(idx):
-            page = pdf[i]
-            # cut the text out of the picture (lines and boxes stay) and keep only visible text
-            spans = _visible_spans(fitz, page, _collect(page))
-            png = page.get_pixmap(dpi=dpi, alpha=False).tobytes("png")
-            for s in spans:
-                _frame(doc, s, page.rect.width, y_offset)
-            _background(doc, png, page.rect.width, page.rect.height, first=(n == 0))
-        doc.save(str(dst))
-    finally:
-        pdf.close()
+    for n, i in enumerate(idx):
+        spans, png, (w, h) = render_page(src, i, dpi)
+        for s in spans:
+            _frame(doc, s, w, y_offset)
+        _background(doc, png, w, h, first=(n == 0))
+    doc.save(str(dst))
     return dst

@@ -107,10 +107,17 @@ def _esc(s: str) -> str:
 
 def _builtin(src, dst):
     ext = Path(src).suffix.lower()
-    fn = {".docx": _docx_pdf, ".xlsx": _xlsx_pdf, ".xlsm": _xlsx_pdf, ".pptx": _pptx_pdf}.get(ext)
-    if fn is None:
+    if ext == ".docx":
+        from .builtin_docx import docx_to_pdf
+        docx_to_pdf(src, dst)
+    elif ext in (".xlsx", ".xlsm"):
+        from .builtin_xlsx import xlsx_to_pdf
+        xlsx_to_pdf(src, dst)
+    elif ext == ".pptx":
+        from .builtin_pptx import pptx_to_pdf
+        pptx_to_pdf(src, dst)
+    else:
         raise MissingDependencyError(f"Built-in engine cannot read {ext}; install LibreOffice.")
-    fn(Path(src), Path(dst), _fonts())
     return dst
 
 

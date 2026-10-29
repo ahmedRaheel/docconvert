@@ -153,7 +153,7 @@ def _clean_options(raw):
         if not PAGES.match(str(raw["pages"])):
             return {}, "auto", "Pages should look like 1-3, 5."
         opts["pages"] = str(raw["pages"]).replace(" ", "")
-    if raw.get("mode") in ("editable", "image"):
+    if raw.get("mode") in ("auto", "exact", "editable", "image"):
         opts["mode"] = raw["mode"]
     if raw.get("layout") in ("auto", "fixed", "flow"):
         opts["layout"] = raw["layout"]

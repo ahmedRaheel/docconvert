@@ -14,7 +14,7 @@ def main(argv=None) -> int:
     ap.add_argument("-o", "--output", help="output file (default: next to input)")
     ap.add_argument("-e", "--engine", default="auto", choices=["auto", "libreoffice", "pdf2docx", "weasyprint", "chrome", "builtin"])
     ap.add_argument("-p", "--pages", help='pages for PDF input, e.g. "1-3,5"')
-    ap.add_argument("--mode", choices=["editable", "image"], help="PDF->PPTX mode")
+    ap.add_argument("--mode", choices=["auto", "exact", "editable", "image"], help="PDF->PPTX mode")
     ap.add_argument("--sheet-mode", choices=["page", "table"], help="PDF->XLSX sheet layout")
     ap.add_argument("--layout", choices=["auto", "fixed", "flow"], help="PDF->Word: exact copy (forms) or flowing text")
     ap.add_argument("--list-engines", action="store_true")

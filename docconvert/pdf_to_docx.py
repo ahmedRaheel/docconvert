@@ -26,7 +26,8 @@ def pdf_to_docx(src, dst, *, engine: str = "auto", pages=None, layout: str = "au
     if layout not in ("auto", "fixed", "flow"):
         layout = "auto"
     if layout != "flow":
-        from .pdf_to_docx_fixed import looks_like_form, pdf_to_docx_fixed
+        from .pdf_layout import looks_like_form
+        from .pdf_to_docx_fixed import pdf_to_docx_fixed
         if layout == "fixed" or looks_like_form(src, pages):
             return pdf_to_docx_fixed(src, dst, pages=pages)
     if engine in ("auto", "pdf2docx"):
@@ -178,17 +179,17 @@ def _add_paragraph(doc, p, body, page_width, ALIGN, Pt, RGBColor):
     para = doc.add_paragraph(style=style)
     for r in runs:
         run = para.add_run(r["text"])
-        if not style or style == "List Bullet":
-            run.font.size = Pt(r["size"] or body)
-        if r["font"] and not style:
+        run.font.size = Pt(r["size"] or body)             # source size wins over the style's size
+        if r["font"]:
             run.font.name = r["font"]
-        run.bold = True if r["bold"] else None
+        run.bold = True if r["bold"] else (False if style else None)
         run.italic = True if r["italic"] else None
-        if r["color"] != "000000" and not style:
-            run.font.color.rgb = RGBColor.from_string(r["color"])
+        run.font.color.rgb = RGBColor.from_string(r["color"])   # explicit, including black, so heading styles don't recolour
     centre = abs((p["x0"] + p["x1"]) / 2 - page_width / 2) < 8 and p["x0"] > 90
     if centre:
         para.alignment = ALIGN.CENTER
-    elif p["x0"] - 54 > 20 and not style:
+    elif p["x0"] > page_width / 2 and p["x1"] > page_width - 54 - 12:
+        para.alignment = ALIGN.RIGHT
+    elif p["x0"] - 54 > 20:
         para.paragraph_format.left_indent = Pt(p["x0"] - 54)
     para.paragraph_format.space_after = Pt(6)

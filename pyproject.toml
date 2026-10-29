@@ -11,7 +11,7 @@ requires-python = ">=3.9"
 license = { text = "MIT" }
 dependencies = [
     "pdfplumber>=0.10",
-    "pypdfium2>=4.0",
+    "pypdfium2>=4.30",
     "python-docx>=1.0",
     "openpyxl>=3.1",
     "python-pptx>=0.6.23",
@@ -21,7 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-fidelity = ["pdf2docx>=0.5.8", "pymupdf"]   # best PDF->Word layout + exact-layout mode for forms (PyMuPDF is AGPL)
+fidelity = ["pdf2docx>=0.5.8"]   # optional PDF->Word flow engine (uses PyMuPDF, AGPL); forms do NOT need it
 html = ["weasyprint>=60"]   # best HTML->PDF CSS rendering
 test = ["pytest"]
 
